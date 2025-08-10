@@ -1,0 +1,377 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Gene Browser</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
+<style>
+  :root { --fg:#111; --muted:#666; --bg:#fff; --card:#f9fafb; --br:#e5e7eb; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
+  .wrap { max-width:1100px; margin:32px auto; padding:0 16px; }
+  h1 { margin:0 0 6px; font-size:22px; }
+  p.lead { margin:0 0 18px; color:var(--muted); }
+  input, button { padding:10px 12px; border:1px solid var(--br); border-radius:10px; font:inherit; }
+  button { background:#111; color:#fff; cursor:pointer; }
+  button:disabled { opacity:.6; cursor:not-allowed; }
+  .card { background:var(--card); border:1px solid var(--br); border-radius:12px; padding:14px; }
+
+  /* 2 columns: left (tabs/panels) | right (RSIDs) */
+  .grid { display:grid; gap:12px; grid-template-columns: 2fr 1fr; align-items:start; }
+
+  .section-title { font-size:14px; color:#333; margin:0 0 8px; }
+  .placeholder { border:1px dashed var(--br); border-radius:10px; padding:16px; color:var(--muted); background:#fff; min-height:160px; display:flex; align-items:center; justify-content:center; text-align:center; }
+  .muted { color:var(--muted); }
+  .mono { font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace; }
+  .spin { width:14px; height:14px; border:2px solid #ddd; border-top-color:#111; border-radius:50%; animation:s .9s linear infinite; display:inline-block; vertical-align:-2px; margin-right:6px }
+  @keyframes s { to { transform: rotate(360deg); } }
+
+  /* Tabs */
+  .tabs { display:flex; gap:6px; margin:-6px -6px 10px; padding:6px; border-bottom:1px solid var(--br); }
+  .tab { appearance:none; border:1px solid var(--br); background:#fff; color:var(--fg); padding:8px 10px; border-radius:10px; font:inherit; cursor:pointer; }
+  .tab.active { background:#111; color:#fff; border-color:#111; }
+  .panels .panel { padding:4px 0; }
+  .panel[hidden] { display:none; }
+
+  /* RSIDs list (right column) */
+  .toolbar { display:flex; gap:8px; align-items:center; justify-content:space-between; margin:8px 0; }
+  .list { border:1px solid var(--br); background:#fff; border-radius:10px; height:360px; overflow:auto; }
+  .item { display:grid; grid-template-columns: 1fr auto; gap:10px; align-items:start; padding:8px 10px; border-bottom:1px solid #f0f0f0; cursor:pointer; }
+  .item:hover { background:#f7f7f7; }
+  .item.active { background:#e6f3ff; border-left:4px solid #0077cc; }
+  .rsid { font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .hgvs { font-size:12px; color:var(--muted); font-family: ui-monospace,SFMono-Regular,Menlo,monospace; white-space:normal; overflow-wrap:anywhere; word-break:break-word; }
+  .badge { font-size:12px; color:#0a7; font-family: ui-monospace,SFMono-Regular,Menlo,monospace; align-self:center; }
+
+  /* 2D panel sizing: keep plot INSIDE */
+  #panel-2d { position:relative; }
+  .plot-wrap { width:100%; height:360px; max-width:100%; overflow:hidden; }
+  #plot2d { width:100%; height:100%; } /* Plotly reads this size */
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Gene Browser</h1>
+  <p class="lead">Enter a gene symbol, load variants from the backend, then click an RSID to get a 2–3 sentence functional answer. The 2D plot stays contained in its panel.</p>
+
+  <!-- Minimal controls -->
+  <div class="card" style="margin-bottom:12px">
+    <div style="display:grid; grid-template-columns: 1fr auto; gap:8px;">
+      <input id="gene" placeholder="Gene (e.g., BRCA1)" value="BRCA1">
+      <button id="load">Load Variants</button>
+    </div>
+    <div id="status" class="mono muted" style="margin-top:8px;"></div>
+  </div>
+
+  <div class="grid">
+    <!-- LEFT: tabs/panels -->
+    <div class="card">
+      <div class="tabs" role="tablist" aria-label="Gene views">
+        <button class="tab active" role="tab" aria-selected="true" aria-controls="panel-info" id="tab-info">Gene Info</button>
+        <button class="tab" role="tab" aria-selected="false" aria-controls="panel-2d" id="tab-2d">2D View</button>
+        <button class="tab" role="tab" aria-selected="false" aria-controls="panel-3d" id="tab-3d">3D View</button>
+      </div>
+
+      <div class="panels">
+        <!-- Gene Info -->
+        <section id="panel-info" class="panel" role="tabpanel" aria-labelledby="tab-info">
+          <div class="section-title">Gene Info</div>
+          <details open>
+            <summary><b id="geneTitle">—</b> <span class="muted" id="counts"></span></summary>
+            <div style="margin-top:8px">
+              <p id="summary" class="muted" style="margin-bottom:8px">—</p>
+              <div class="mono" id="meta">—</div>
+            </div>
+          </details>
+        </section>
+
+        <!-- 2D -->
+        <section id="panel-2d" class="panel" role="tabpanel" aria-labelledby="tab-2d" hidden>
+          <div class="section-title">2D View</div>
+          <div class="plot-wrap">
+            <div id="plot2d"></div>
+          </div>
+        </section>
+
+        <!-- 3D -->
+        <section id="panel-3d" class="panel" role="tabpanel" aria-labelledby="tab-3d" hidden>
+          <div class="section-title">3D View</div>
+          <div id="plot3d" class="placeholder">3D structure viewer goes here (Mol* / NGL placeholder).</div>
+        </section>
+      </div>
+    </div>
+
+    <!-- RIGHT: RSIDs -->
+    <div class="card">
+      <div class="section-title">RSIDs</div>
+      <div class="toolbar">
+        <input id="filter" placeholder="Filter RSIDs (e.g., rs429358)" style="flex:1">
+        <span class="muted mono" id="rsidCount">0 items</span>
+      </div>
+      <div id="rsidList" class="list"><div class="muted" style="padding:14px">Load a gene to see RSIDs</div></div>
+
+      <div style="margin-top:12px">
+        <div class="section-title">Functional Answer <span id="activeRsidLabel" class="muted mono"></span></div>
+        <div id="answer" class="mono muted">Click an RSID above to fetch a short answer.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  // ---- config ----
+  const API_BASE = "http://127.0.0.1:8000";
+
+  // ---- helpers ----
+  const el = (id) => document.getElementById(id);
+  function setStatus(msg, spin=false){ el('status').innerHTML = spin ? `<span class="spin"></span>${msg}` : msg; }
+  function escapeHtml(s){ return (s||'').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
+  async function fetchJSON(url, opts){
+    const r = await fetch(url, opts);
+    const raw = await r.text();
+    let data = null; try { data = JSON.parse(raw); } catch {}
+    if (!r.ok || !data) throw new Error(data?.detail || `HTTP ${r.status}: ${raw.slice(0,200)}`);
+    return data;
+  }
+
+  // ---- state ----
+  let variants = [];    // [{rsid, allele_frequency, hgvs_g, variant_id}]
+  let filtered = [];
+  let inFlight = false;
+  let plot2dRendered = false;
+
+  // ---- renderers ----
+  function renderInfo(gene, meta){
+    el('geneTitle').textContent = gene || '—';
+    el('counts').textContent = variants.length ? `· ${variants.length} variants` : '';
+    const bits = [];
+    if (meta?.summary) el('summary').textContent = meta.summary;
+    const co = meta?.coordinates || {};
+    bits.push(
+      `gene_id: ${escapeHtml(co.gene_id || '—')}`,
+      `chrom: ${escapeHtml(co.chrom || '—')}`,
+      `start: ${co.start ?? '—'}`,
+      `stop: ${co.stop ?? '—'}`,
+      `strand: ${co.strand ?? '—'}`,
+      `canonical_transcript: ${escapeHtml(co.canonical_transcript_id || '—')}`,
+    );
+    el('meta').innerHTML = bits.join('<br>');
+  }
+
+  function renderList(){
+    const list = el('rsidList');
+    list.innerHTML = '';
+    if (!filtered.length){
+      list.innerHTML = '<div class="muted" style="padding:14px">No variants to display.</div>';
+      el('rsidCount').textContent = '0 items';
+      return;
+    }
+    el('rsidCount').textContent = `${filtered.length} item${filtered.length>1?'s':''}`;
+    for (const v of filtered){
+      const div = document.createElement('div');
+      div.className = 'item';
+      div.innerHTML = `
+        <div>
+          <div class="rsid">${escapeHtml(v.rsid || '(no rsid)')}</div>
+          <div class="hgvs">${escapeHtml(v.hgvs_g || v.variant_id || '')}</div>
+        </div>
+        <div class="badge">${v.allele_frequency != null ? Number(v.allele_frequency).toExponential(2) : '—'}</div>
+      `;
+      div.addEventListener('click', () => {
+        document.querySelectorAll('.item').forEach(n => n.classList.remove('active'));
+        div.classList.add('active');
+        el('activeRsidLabel').textContent = v.rsid ? `· ${v.rsid}` : '';
+        fetchAnswer(v.rsid);
+      });
+      list.appendChild(div);
+    }
+  }
+
+  el('filter').addEventListener('input', () => {
+    const q = el('filter').value.trim().toLowerCase();
+    filtered = !q ? variants : variants.filter(v => (v.rsid||'').toLowerCase().includes(q));
+    renderList();
+  });
+
+  // ---- 2D plot ----
+  function render2D(){
+    const container = el('plot2d');
+    if (!container) return;                 // safety
+    if (!variants.length){
+      container.innerHTML = '<div class="placeholder">Load a gene to render 2D plot</div>';
+      plot2dRendered = true;
+      return;
+    }
+
+    // Data
+    const xs = variants.map((_, i) => i + 1);
+    const ys = variants.map(v => (v.allele_frequency ?? NaN));
+
+    // Thin bars as stems
+    const stems = {
+      type: 'bar',
+      x: xs,
+      y: ys.map(y => (Number.isFinite(y) ? y : 0)),
+      marker: { line: { width: 0 } },
+      width: 0.6,
+      hoverinfo: 'skip',
+      opacity: 0.25,
+      name: 'AF (stem)'
+    };
+
+    // Points on top
+    const points = {
+      type: 'scattergl',
+      mode: 'markers',
+      x: xs,
+      y: ys,
+      text: variants.map(v => (v.rsid || v.variant_id || '')),
+      hovertemplate: 'Index %{x}<br>AF=%{y:.2e}<br>%{text}<extra></extra>',
+      marker: { size: 6 }
+    };
+
+    Plotly.newPlot(container, [stems, points], {
+      margin: {l:60, r:10, t:10, b:40},
+      height: container.clientHeight,   // <- follow CSS height
+      autosize: true,
+      xaxis: { title: 'Variant index', rangemode: 'tozero' },
+      yaxis: { title: 'Allele frequency (AF)', type: 'log', rangemode: 'tozero' }
+    }, {
+      responsive: true,
+      useResizeHandler: true
+    });
+
+    plot2dRendered = true;
+  }
+
+  function ensure2DVisibleThenRender(){
+    const panel = document.getElementById('panel-2d');
+    if (panel.hidden) return; // not visible yet
+    // render now (container has real size)
+    render2D();
+    // and resize to be safe
+    const container = document.getElementById('plot2d');
+    if (container && container.data) {
+      Plotly.Plots.resize(container);
+    }
+  }
+
+  window.addEventListener('resize', () => {
+    const c = document.getElementById('plot2d');
+    if (c && c.data) Plotly.Plots.resize(c);
+  });
+
+  // ---- backend loaders ----
+  async function loadFromOverview(){
+    const gene = (el('gene').value || '').trim();
+    if (!gene){ setStatus('Please enter a gene symbol.'); return; }
+
+    const dataset = 'gnomad_r4';
+    const ref = 'GRCh38';
+    const url = `${API_BASE}/api/gene/overview?gene=${encodeURIComponent(gene)}&dataset=${dataset}&ref=${ref}`;
+
+    setStatus(`GET ${url}`, true);
+    const t0 = performance.now();
+    const js = await fetchJSON(url);
+    const dt = Math.round(performance.now() - t0);
+
+    const count = js?.counts?.variants_total ?? (js?.variants?.length || 0);
+    setStatus(`✓ ${dt} ms — loaded ${count} variants`);
+
+    variants = (js.variants || []).map(v => ({
+      rsid: (v.rsid || '').trim(),
+      variant_id: v.variant_id || '',
+      hgvs_g: v.hgvs_g || '',
+      allele_frequency: v.allele_frequency ?? null
+    }));
+    filtered = variants.slice();
+    renderList();
+    renderInfo(js.gene || gene, { summary: js.summary, coordinates: js.coordinates });
+
+    // if 2D tab is active, render now
+    if (document.getElementById('tab-2d').classList.contains('active')) {
+      plot2dRendered = false;
+      ensure2DVisibleThenRender();
+    }
+  }
+
+  async function fetchAnswer(rsid){
+    if (!rsid){ el('answer').textContent = 'No RSID in this row.'; return; }
+    const gene = (el('gene').value || '').trim();
+    const url = `${API_BASE}/api/rsids/${encodeURIComponent(rsid)}/detail?sample=10&gene=${encodeURIComponent(gene)}`;
+    el('answer').innerHTML = `<span class="spin"></span> ${escapeHtml(url)}`;
+    try {
+      const js = await fetchJSON(url);
+      el('answer').textContent = js.functional_answer || '(no answer)';
+    } catch (e) {
+      el('answer').innerHTML = `<span class="muted">Error: ${escapeHtml(e.message||String(e))}</span>`;
+    }
+  }
+
+  // ---- main ----
+  el('load').addEventListener('click', async () => {
+    if (inFlight) return;
+    inFlight = true;
+    el('answer').textContent = 'Click an RSID above to fetch a short answer.';
+    try {
+      await loadFromOverview();
+    } catch (e) {
+      setStatus(`✗ ${escapeHtml(e.message || String(e))}`);
+      el('rsidList').innerHTML = '<div class="muted" style="padding:14px">Failed to load variants.</div>';
+    } finally {
+      inFlight = false;
+    }
+  });
+  el('gene').addEventListener('keydown', e => { if (e.key === 'Enter') el('load').click(); });
+
+  // Tabs navigation (calls Plotly resize when 2D shows)
+  (function initTabs(){
+    const tabs = Array.from(document.querySelectorAll('.tab'));
+    const panels = {
+      'tab-info': document.getElementById('panel-info'),
+      'tab-2d':   document.getElementById('panel-2d'),
+      'tab-3d':   document.getElementById('panel-3d'),
+    };
+
+    function activate(id){
+      tabs.forEach(btn => {
+        const on = (btn.id === id);
+        btn.classList.toggle('active', on);
+        btn.setAttribute('aria-selected', on ? 'true' : 'false');
+        btn.tabIndex = on ? 0 : -1;
+      });
+      Object.entries(panels).forEach(([tid, panel]) => {
+        const show = (tid === id);
+        panel.hidden = !show;
+        panel.classList.toggle('active', show);
+      });
+
+      if (id === 'tab-2d') {
+        // render when visible
+        ensure2DVisibleThenRender();
+      }
+    }
+
+    tabs.forEach(btn => {
+      btn.addEventListener('click', () => activate(btn.id));
+      btn.addEventListener('keydown', e => {
+        if (!['ArrowLeft','ArrowRight','Home','End'].includes(e.key)) return;
+        e.preventDefault();
+        const i = tabs.indexOf(btn);
+        let j = i;
+        if (e.key === 'ArrowLeft')  j = (i - 1 + tabs.length) % tabs.length;
+        if (e.key === 'ArrowRight') j = (i + 1) % tabs.length;
+        if (e.key === 'Home')       j = 0;
+        if (e.key === 'End')        j = tabs.length - 1;
+        tabs[j].focus();
+        activate(tabs[j].id);
+      });
+    });
+
+    // default
+    activate('tab-info');
+  })();
+</script>
+</body>
+</html>
